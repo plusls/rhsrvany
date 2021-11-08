@@ -316,6 +316,12 @@ RegistryRead (
         if (lSuccess == ERROR_SUCCESS) {
             return (TRUE);
         }
+        else {
+            SvcReportEvent(TEXT("RegQueryValueEx"));
+        }
+    }
+    else {
+        SvcReportEvent(TEXT("RegOpenKey"));
     }
 
     return (FALSE);
@@ -386,51 +392,75 @@ SvcInit (
         &nSize
     );
 
-    if (fSuccess) {
-        fSuccess = RegistryRead (
-            HKEY_LOCAL_MACHINE,
-            szRegistryPath,
-            TEXT("PWD"),
-            szPWD,
-            &nSize
-        );
-    }
-
-    if (fSuccess) {
-        fSuccess = CreateProcess (
-            NULL,
-            szCmdLine,
-            NULL,
-            NULL,
-            FALSE,
-            (
-                CREATE_NO_WINDOW
-            ),
-            NULL,
-            szPWD,
-            &si,
-            &pi
-        );
-    }
-
-    // treat errors
-
-    while(1)
-    {
-        // Check whether to stop the service.
-        WaitForSingleObject (
-            ghSvcStopEvent,
-            INFINITE
-        );
-
-        ReportSvcStatus (
-            SERVICE_STOPPED,
-            NO_ERROR,
-            0
-        );
-
+    if (!fSuccess) {
         return;
     }
+    fSuccess = RegistryRead(
+        HKEY_LOCAL_MACHINE,
+        szRegistryPath,
+        TEXT("PWD"),
+        szPWD,
+        &nSize
+    );
+
+    if (!fSuccess) {
+        return;
+    }
+
+    HANDLE hJob = CreateJobObject(NULL, NULL);
+    if (hJob == NULL) {
+        SvcReportEvent(TEXT("CreateJobObject"));
+        return;
+    }
+
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = { 0 };
+    info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &info, sizeof(info))) {
+        SvcReportEvent(TEXT("SetInformationJobObject"));
+        return;
+    }
+
+    fSuccess = CreateProcess (
+        NULL,
+        szCmdLine,
+        NULL,
+        NULL,
+        FALSE,
+        (
+            CREATE_NO_WINDOW | CREATE_SUSPENDED
+        ),
+        NULL,
+        szPWD,
+        &si,
+        &pi
+    );
+
+    if (!fSuccess) {
+        SvcReportEvent(TEXT("CreateProcess"));
+        return;
+    }
+
+    if (!AssignProcessToJobObject(hJob, pi.hProcess)) {
+        SvcReportEvent(TEXT("AssignProcessToJobObject"));
+        return;
+    }
+
+    if (!ResumeThread(pi.hThread)) {
+        SvcReportEvent(TEXT("ResumeThread"));
+        return;
+    }
+
+    // Check whether to stop the service.
+    WaitForSingleObject (
+        ghSvcStopEvent,
+        INFINITE
+    );
+    ReportSvcStatus (
+        SERVICE_STOPPED,
+        NO_ERROR,
+        0
+    );
+    CloseHandle(hJob);
 }
 
 static VOID
@@ -511,13 +541,15 @@ SvcReportEvent (
     if (
         NULL != hEventSource
     ) {
+        DWORD lastError = GetLastError();
         SNPRINTF(
             Buffer,
             80,
             TEXT("%s failed with %d"),
             szFunction,
-            GetLastError()
+            lastError
         );
+        ReportSvcStatus(SERVICE_STOPPED, lastError, 0);
 
         lpszStrings[0] = svcname;
         lpszStrings[1] = Buffer;
