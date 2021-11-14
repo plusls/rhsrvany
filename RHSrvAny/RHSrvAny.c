@@ -44,7 +44,7 @@ static int SvcUninstall (void);
 VOID WINAPI SvcCtrlHandler (DWORD);
 VOID WINAPI SvcMain (DWORD, LPTSTR *);
 
-static VOID SvcReportEvent (LPTSTR);
+static VOID SvcReportEvent (LPTSTR, DWORD);
 static VOID SvcInit (DWORD, LPTSTR *);
 static VOID ReportSvcStatus (DWORD, DWORD, DWORD);
 
@@ -118,7 +118,7 @@ compat_tmain (int argc, TCHAR *argv[])
 
     if (!StartServiceCtrlDispatcher( DispatchTable ))
     {
-        SvcReportEvent(TEXT("StartServiceCtrlDispatcher"));
+        SvcReportEvent(TEXT("StartServiceCtrlDispatcher"), GetLastError());
         return EXIT_FAILURE;
     }
 
@@ -267,7 +267,7 @@ SvcMain (
     );
 
     if (!gSvcStatusHandle) {
-        SvcReportEvent(TEXT("RegisterServiceCtrlHandler"));
+        SvcReportEvent(TEXT("RegisterServiceCtrlHandler"), GetLastError());
         return;
     }
 
@@ -317,11 +317,11 @@ RegistryRead (
             return (TRUE);
         }
         else {
-            SvcReportEvent(TEXT("RegQueryValueEx"));
+            SvcReportEvent(TEXT("RegQueryValueEx"), lSuccess);
         }
     }
     else {
-        SvcReportEvent(TEXT("RegOpenKey"));
+        SvcReportEvent(TEXT("RegOpenKey"), lSuccess);
     }
 
     return (FALSE);
@@ -395,6 +395,8 @@ SvcInit (
     if (!fSuccess) {
         return;
     }
+
+    nSize = 1024;
     fSuccess = RegistryRead(
         HKEY_LOCAL_MACHINE,
         szRegistryPath,
@@ -409,14 +411,14 @@ SvcInit (
 
     HANDLE hJob = CreateJobObject(NULL, NULL);
     if (hJob == NULL) {
-        SvcReportEvent(TEXT("CreateJobObject"));
+        SvcReportEvent(TEXT("CreateJobObject"), GetLastError());
         return;
     }
 
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION info = { 0 };
     info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     if (!SetInformationJobObject(hJob, JobObjectExtendedLimitInformation, &info, sizeof(info))) {
-        SvcReportEvent(TEXT("SetInformationJobObject"));
+        SvcReportEvent(TEXT("SetInformationJobObject"), GetLastError());
         return;
     }
 
@@ -436,17 +438,17 @@ SvcInit (
     );
 
     if (!fSuccess) {
-        SvcReportEvent(TEXT("CreateProcess"));
+        SvcReportEvent(TEXT("CreateProcess"), GetLastError());
         return;
     }
 
     if (!AssignProcessToJobObject(hJob, pi.hProcess)) {
-        SvcReportEvent(TEXT("AssignProcessToJobObject"));
+        SvcReportEvent(TEXT("AssignProcessToJobObject"), GetLastError());
         return;
     }
 
     if (!ResumeThread(pi.hThread)) {
-        SvcReportEvent(TEXT("ResumeThread"));
+        SvcReportEvent(TEXT("ResumeThread"), GetLastError());
         return;
     }
 
@@ -527,7 +529,8 @@ SvcCtrlHandler (
 /* Logs messages to the event log */
 static VOID
 SvcReportEvent (
-    LPTSTR szFunction
+    LPTSTR szFunction,
+    DWORD errorCode
 ) {
     TCHAR Buffer[80];
     HANDLE hEventSource;
@@ -541,15 +544,14 @@ SvcReportEvent (
     if (
         NULL != hEventSource
     ) {
-        DWORD lastError = GetLastError();
         SNPRINTF(
             Buffer,
             80,
             TEXT("%s failed with %d"),
             szFunction,
-            lastError
+            errorCode
         );
-        ReportSvcStatus(SERVICE_STOPPED, lastError, 0);
+        ReportSvcStatus(SERVICE_STOPPED, errorCode, 0);
 
         lpszStrings[0] = svcname;
         lpszStrings[1] = Buffer;
